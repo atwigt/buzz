@@ -9,11 +9,16 @@ use super::types::*;
 /// persona and global tiers assembled at the command boundary. Each field
 /// builder constructs its own candidate list and resolves via
 /// `resolve_with_override`.
+///
+/// `claude_config_dir` — when `Some`, the panel reads claude `settings.json`
+/// and `.claude.json` from that directory (the agent's effective
+/// `CLAUDE_CONFIG_DIR`) instead of `~/.claude/`. Ignored for non-claude runtimes.
 pub(crate) fn read_config_surface(
     record: &ManagedAgentRecord,
     runtime_meta: Option<&KnownAcpRuntime>,
     session_cache: Option<&SessionConfigCache>,
     tiers: &InheritedConfigTiers,
+    claude_config_dir: Option<&std::path::Path>,
 ) -> RuntimeConfigSurface {
     let is_pre_spawn = session_cache.is_none();
 
@@ -22,7 +27,7 @@ pub(crate) fn read_config_surface(
         .map(|m| m.id)
         .and_then(|id| match id {
             "goose" => super::goose::read_config_file().map(|c| (c, true)),
-            "claude" => super::claude::read_config_file().map(|c| (c, true)),
+            "claude" => super::claude::read_config_file(claude_config_dir).map(|c| (c, true)),
             "codex" => super::codex::read_config_file().map(|c| (c, true)),
             "buzz-agent" => super::buzz_agent::read_config_file().map(|c| (c, true)),
             _ => None,
@@ -148,7 +153,8 @@ pub(crate) fn read_config_surface(
     let config_file_path = runtime_meta
         .and_then(|m| m.config_file_path)
         .map(resolve_tilde);
-    let mcp_config_file_path = runtime_meta.and_then(mcp_config_file_path_for_runtime);
+    let mcp_config_file_path =
+        runtime_meta.and_then(|m| mcp_config_file_path_for_runtime(m, claude_config_dir));
     let extensions = file_config.extensions.clone();
 
     let sources = ConfigSourceReport {
@@ -189,15 +195,32 @@ pub(crate) fn read_config_surface(
         advanced,
         extensions,
         sources,
+        claude_config_dir_custom: claude_config_dir.is_some(),
     }
 }
 
-fn mcp_config_file_path_for_runtime(runtime: &KnownAcpRuntime) -> Option<String> {
+fn mcp_config_file_path_for_runtime(
+    runtime: &KnownAcpRuntime,
+    claude_config_dir: Option<&std::path::Path>,
+) -> Option<String> {
     match runtime.id {
         "goose" => {
             super::goose::goose_config_path().map(|path| path.to_string_lossy().into_owned())
         }
-        "claude" => Some(resolve_tilde("~/.claude.json")),
+        // #3493: the claude 2.1.x binary resolves .claude.json as
+        // join(CLAUDE_CONFIG_DIR || homedir(), ".claude.json"), so the MCP
+        // config file moves with a user-set CLAUDE_CONFIG_DIR.
+        "claude" => Some(
+            claude_config_dir
+                .map(|d| d.join(".claude.json"))
+                .unwrap_or_else(|| {
+                    dirs::home_dir()
+                        .map(|h| h.join(".claude.json"))
+                        .unwrap_or_default()
+                })
+                .to_string_lossy()
+                .into_owned(),
+        ),
         "codex" => {
             super::codex::codex_config_path().map(|path| path.to_string_lossy().into_owned())
         }
