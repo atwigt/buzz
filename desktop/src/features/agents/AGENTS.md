@@ -180,6 +180,31 @@ with a TypeScript lookup table or an id comparison in a component.
    import boundary. Do not silently strip them: rejection keeps the reviewed
    string identical to the executed string. New sharing paths must reuse the
    same validation before they persist or activate a definition.
+13. **Thinking effort has two surfaces: a local-only WRITE control and a
+   read-only two-facts DISPLAY.** The write control is `EffortPickerField`
+   (`ui/EffortPickerField.tsx`), a self-contained section component mounted in
+   `AgentInstanceEditDialog` beside the Model block. It is direct-write, not
+   part of the frozen `UpdateManagedAgentInput` shape: each selection calls
+   `persistAgentEffortLevel` and invalidates the config-surface query, mirroring
+   the `setManagedAgentAutoRestart` standalone-setter precedent. Its gating and
+   option compute live in the pure helper `ui/effortPicker.ts`
+   (`effortPickerState`): the picker renders only when
+   `agent.backend.type === "local"` **AND** a `thought_level` `effortConfigId`
+   has been discovered from the running session (absent pre-first-session and
+   for runtimes/models without effort support). Local-only is load-bearing, not
+   cosmetic — the Rust command rejects non-local backends because remote effort
+   is set at deploy time via `policy_env`. Because it reads its inputs from the
+   config surface the dialog already fetches (`useAgentConfigSurface`) and owns
+   its own mutation, it does **not** thread new props through the over-1000-line
+   dialog (see rule 11): keep effort state inside the section component, never
+   as dialog-level props. The read-only display is the `thinkingEffort`
+   normalized field rendered by `AgentConfigPanel` via `NormalizedRow`, which
+   already shows both facts — `field.value` (canonical, the effort the next
+   spawn will launch with) and, when a running ACP session differs,
+   `field.overriddenValue` struck through (the live session's current effort).
+   No component owns "configured vs current" logic; the reader's canonical tier
+   ordering feeds both facts. Do not add a second effort write path or restate
+   the two-facts logic in a component.
 
 ## The tests that enforce this
 
@@ -203,6 +228,11 @@ with a TypeScript lookup table or an id comparison in a component.
 - `lib/personaCatalogRelay.test.mjs` and
   `ui/personaCatalogOwnerLabel.test.mjs` — reject invisible definition text
   and keep Markdown concealment syntax literal in the review surface.
+- `ui/effortPicker.test.mjs` — `effortPickerState` gating (local + discovered
+  `effortConfigId` renders; provider backend or missing configId hides) and
+  option/preselect compute, plus `effortSelectionToPersistedValue` sentinel →
+  null. This is where the v4 provider regression is pinned: the write control
+  must never render for a provider backend.
 - `desktop/tests/e2e/onboarding-agent-defaults.spec.ts` — onboarding behavior
   acceptance coverage for readiness, failure states, defaults, session-draft
   restoration, zero-write Skip, Next save failure/retry, navigation, and

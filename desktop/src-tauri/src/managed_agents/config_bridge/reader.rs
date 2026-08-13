@@ -187,6 +187,13 @@ pub(crate) fn read_config_surface(
         mcp_config_file_path,
     };
 
+    // B5: the adapter-advertised `thought_level` config option, discovered from
+    // the session cache (never hardcoded). The UI uses `effort_config_id` to send
+    // `set_config_option` and renders `effort_options` instead of hardcoded values.
+    let thought_level = session_cache.and_then(|c| find_config_option(c, "thought_level"));
+    let effort_config_id = thought_level.map(|o| o.config_id.clone());
+    let effort_options = thought_level.map(|o| o.options.clone()).unwrap_or_default();
+
     RuntimeConfigSurface {
         runtime_id: runtime_meta.map(|m| m.id.to_string()),
         runtime_label: runtime_meta.map(|m| m.label.to_string()),
@@ -196,6 +203,8 @@ pub(crate) fn read_config_surface(
         extensions,
         sources,
         claude_config_dir_custom: claude_config_dir.is_some(),
+        effort_config_id,
+        effort_options,
     }
 }
 
@@ -514,7 +523,15 @@ fn build_thinking_field(
     session_cache: Option<&SessionConfigCache>,
     tiers: &InheritedConfigTiers,
 ) -> Option<NormalizedField> {
-    // Tier ordering: record env > ACP > persona env > global env > definition env > config file.
+    // Tier ordering:
+    //   record env > record.effort_level (canonical Buzz-persisted) > ACP >
+    //   persona env > global env > definition env > config file.
+    //
+    // `record.effort_level` is the B5 canonical value: the effort a spawn will
+    // actually apply at next session start (via `apply_effort_env`). Sitting it
+    // above ACP means the panel shows the *configured* value the agent will
+    // launch with rather than a stale live-session reading — the record can't
+    // be masked by, nor mask, the running value silently.
     let [rec_env, pers_env, glob_env, def_env] = thinking_env_var
         .map(|k| {
             env_candidates(
@@ -527,8 +544,11 @@ fn build_thinking_field(
         })
         .unwrap_or([None, None, None, None]);
 
+    let canonical_effort = record.effort_level.as_deref();
+
     let tiers_list: &[(Option<&str>, ConfigOrigin)] = &[
         (rec_env, ConfigOrigin::BuzzExplicit),
+        (canonical_effort, ConfigOrigin::BuzzExplicit),
         (acp_effort.as_deref(), ConfigOrigin::AcpConfigOption),
         (pers_env, ConfigOrigin::PersonaDefault),
         (glob_env, ConfigOrigin::GlobalDefault),
@@ -698,6 +718,16 @@ fn find_config_option_value(cache: &SessionConfigCache, category: &str) -> Optio
         .iter()
         .find(|o| o.category.as_deref() == Some(category))
         .and_then(|o| o.current_value.clone())
+}
+
+fn find_config_option<'a>(
+    cache: &'a SessionConfigCache,
+    category: &str,
+) -> Option<&'a AcpConfigOptionEntry> {
+    cache
+        .config_options
+        .iter()
+        .find(|o| o.category.as_deref() == Some(category))
 }
 
 fn has_config_option(cache: Option<&SessionConfigCache>, category: &str) -> bool {
